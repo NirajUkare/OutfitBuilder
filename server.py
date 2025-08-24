@@ -1,71 +1,10 @@
-# from fastapi import FastAPI, HTTPException
-# from pydantic import BaseModel
-# from openai import OpenAI
-# import os
-# from dotenv import load_dotenv
-# import json
-
-# load_dotenv()
-# gemini_api_key = os.getenv("GEMINI_API_KEY")
-
-# client = OpenAI(
-#     api_key=gemini_api_key,
-#     base_url="https://generativelanguage.googleapis.com/v1beta/"
-# )
-
-# app = FastAPI(title="Outfit Builder API")
-
-# class WishlistItem(BaseModel):
-#     name: str
-#     description: str
-#     productId: str
-
-# class Wishlist(BaseModel):
-#     items: list[WishlistItem]
-
-# def ask_gemini(wishlist):
-#     prompt = f"""
-# You are a fashion stylist AI. I will provide a wishlist containing items in JSON format.
-# Your task is to build complete outfits using these items.  
-# Each outfit should be an object containing multiple items that match well together.  
-# Output must be in pure JSON only (no explanations).  
-
-# Wishlist:
-# {json.dumps([item.dict() for item in wishlist], indent=2)}
-
-# Now return outfits in JSON format, where each outfit is an object with a list of matching items.
-# """
-#     response = client.chat.completions.create(
-#         model="gemini-2.5-flash",
-#         messages=[
-#             {"role": "system", "content": "You are a helpful assistant."},
-#             {"role": "user", "content": prompt}
-#         ]
-#     )
-#     return response
-
-# @app.post("/build-outfits")
-# def build_outfits(wishlist: Wishlist):
-#     try:
-#         response = ask_gemini(wishlist.items)
-#         outfits_raw = response.choices[0].message.content
-#         outfits = json.loads(outfits_raw)  # parse Gemini's JSON into Python list/dict
-#         return {"outfits": outfits}
-#     except json.JSONDecodeError:
-#         raise HTTPException(status_code=500, detail="Gemini did not return valid JSON")
-#     except Exception as e:
-#         raise HTTPException(status_code=500, detail=str(e))
-
-
-
-
-
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ValidationError
-from openai import OpenAI
+import google.generativeai as genai
 import os
 from dotenv import load_dotenv
 import json
+import uvicorn
 
 # --- Configuration ---
 load_dotenv()
@@ -74,13 +13,11 @@ gemini_api_key = os.getenv("GEMINI_API_KEY")
 if not gemini_api_key:
     raise ValueError("GEMINI_API_KEY environment variable not set.")
 
-# Make the model name configurable
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash") # Changed to gemini-pro for better JSON generation, but you can use any compatible model
+# Configure the Gemini API
+genai.configure(api_key=gemini_api_key)
 
-client = OpenAI(
-    api_key=gemini_api_key,
-    base_url="https://generativelanguage.googleapis.com/v1beta/"
-)
+# Make the model name configurable
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")  # Using gemini-pro as default
 
 app = FastAPI(
     title="Outfit Builder API",
@@ -99,7 +36,7 @@ class WishlistItem(BaseModel):
 class Wishlist(BaseModel):
     items: list[WishlistItem]
 
-# Output Models (NEW: for response validation and documentation)
+# Output Models (for response validation and documentation)
 class OutfitItem(BaseModel):
     name: str
     productId: str
@@ -186,21 +123,12 @@ Wishlist:
 Your Response:
 """
 
-    response =  client.chat.completions.create(
-        model=GEMINI_MODEL,
-        messages=[
-            {"role": "system", "content": "You are a JSON-only fashion stylist AI."},
-            {"role": "user", "content": prompt}
-        ],
-        # Using response_format with compatible models can improve reliability
-        # response_format={"type": "json_object"}, # Note: Check if the Google API via OpenAI proxy supports this. If not, the strong prompt is your best bet.
-        temperature=0.5, # Lower temperature for more predictable, structured output
-    )
-    
-    if not response.choices:
-        raise HTTPException(status_code=500, detail="Gemini API returned an empty response.")
-        
-    return response.choices[0].message.content
+    try:
+        model = genai.GenerativeModel(GEMINI_MODEL)
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error calling Gemini API: {str(e)}")
 
 
 # --- API Endpoint ---
@@ -238,3 +166,9 @@ async def build_outfits(wishlist: Wishlist):
     except Exception as e:
         # Catch any other potential errors (e.g., API connection issues)
         raise HTTPException(status_code=500, detail=str(e))
+    
+if __name__ == "__main__":
+    # Get the PORT from the environment variable provided by the platform (e.g., Render)
+    port = int(os.environ.get("PORT", 8000))
+    # '0.0.0.0' is the host that makes the app accessible from outside the container
+    uvicorn.run("server:app", host="0.0.0.0", port=port, reload=True)
